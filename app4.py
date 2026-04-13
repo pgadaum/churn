@@ -83,7 +83,7 @@ def build_model():
     ])
     
     X_encoded = preprocessor.fit_transform(X)
-    all_feat_names = list(preprocessor.get_feature_names_out(cat_cols)) + num_cols
+    all_feat_names = preprocessor.get_feature_names_out()
     X_encoded_df = pd.DataFrame(X_encoded, columns=all_feat_names)
 
     # 3. Split the already-encoded data
