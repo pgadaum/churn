@@ -24,20 +24,29 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.header-bar {
-    background: linear-gradient(90deg, #1B3564 0%, #0E7B8C 100%);
-    padding: 1.2rem 2rem; border-radius: 8px; margin-bottom: 1.2rem;
-}
-.header-bar h1 { color:#fff; font-size:1.6rem; margin:0; }
-.header-bar p  { color:#A0C4E0; font-size:0.82rem; margin:0.2rem 0 0 0; }
-.risk-high   { background:#C0392B; color:#fff; padding:0.45rem 1.1rem;
-               border-radius:6px; font-size:1.05rem; font-weight:700; display:inline-block; }
-.risk-medium { background:#D97706; color:#fff; padding:0.45rem 1.1rem;
-               border-radius:6px; font-size:1.05rem; font-weight:700; display:inline-block; }
-.risk-low    { background:#1A7A4A; color:#fff; padding:0.45rem 1.1rem;
-               border-radius:6px; font-size:1.05rem; font-weight:700; display:inline-block; }
-.lbl { font-size:0.72rem; font-weight:700; letter-spacing:2px;
-       color:#0E7B8C; text-transform:uppercase; margin:1.2rem 0 0.3rem 0; }
+    /* Force Light Mode Background & Default Text Color */
+    [data-testid="stAppViewContainer"] {
+        background-color: #F4F6F9;
+        color: #1a1a1a;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #ffffff;
+    }
+
+    .header-bar {
+        background: linear-gradient(90deg, #1B3564 0%, #0E7B8C 100%);
+        padding: 1.2rem 2rem; border-radius: 8px; margin-bottom: 1.2rem;
+    }
+    .header-bar h1 { color:#fff; font-size:1.6rem; margin:0; }
+    .header-bar p  { color:#A0C4E0; font-size:0.82rem; margin:0.2rem 0 0 0; }
+    .risk-high   { background:#C0392B; color:#fff; padding:0.45rem 1.1rem;
+                   border-radius:6px; font-size:1.05rem; font-weight:700; display:inline-block; }
+    .risk-medium { background:#D97706; color:#fff; padding:0.45rem 1.1rem;
+                   border-radius:6px; font-size:1.05rem; font-weight:700; display:inline-block; }
+    .risk-low    { background:#1A7A4A; color:#fff; padding:0.45rem 1.1rem;
+                   border-radius:6px; font-size:1.05rem; font-weight:700; display:inline-block; }
+    .lbl { font-size:0.72rem; font-weight:700; letter-spacing:2px;
+           color:#0E7B8C; text-transform:uppercase; margin:1.2rem 0 0.3rem 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -53,6 +62,7 @@ def build_model():
     from imblearn.pipeline import Pipeline as ImbPipeline
     import kagglehub
 
+    # 1. Load and clean data
     path = kagglehub.dataset_download("blastchar/telco-customer-churn")
     df = pd.read_csv(path + "/WA_Fn-UseC_-Telco-Customer-Churn.csv")
     df["TotalCharges"] = pd.to_numeric(df["TotalCharges"], errors="coerce")
@@ -65,34 +75,42 @@ def build_model():
 
     X = df[feature_cols]
     y = df["Churn"]
-    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.20, random_state=42, stratify=y)
 
+    # 2. Encode categorical variables BEFORE the pipeline to satisfy CalibratedClassifierCV
     preprocessor = ColumnTransformer([
-        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat_cols),
-        ("num", StandardScaler(), num_cols),
+        ("cat", OneHotEncoder(sparse_output=False, handle_unknown="ignore"), cat_cols),
+        ("num", "passthrough", num_cols),
     ])
+    
+    X_encoded = preprocessor.fit_transform(X)
+    all_feat_names = list(preprocessor.get_feature_names_out(cat_cols)) + num_cols
+    X_encoded_df = pd.DataFrame(X_encoded, columns=all_feat_names)
 
+    # 3. Split the already-encoded data
+    X_train, _, y_train, _ = train_test_split(X_encoded_df, y, test_size=0.20, random_state=42, stratify=y)
+
+    # 4. Pipeline now only handles scaling and SMOTE to keep it perfectly leak-proof
     pipe = ImbPipeline([
-        ("prep",     preprocessor),
+        ("scale",    StandardScaler()),
         ("smoteenn", SMOTEENN(random_state=42)),
         ("clf",      GradientBoostingClassifier(
                          n_estimators=180, max_depth=3, learning_rate=0.08,
                          subsample=0.85, min_samples_leaf=12, random_state=42)),
     ])
 
+    # 5. Train and calibrate
     calibrated = CalibratedClassifierCV(pipe, method="isotonic", cv=3)
     calibrated.fit(X_train, y_train)
 
-    base_pipe   = calibrated.calibrated_classifiers_[0].estimator
-    fitted_prep = base_pipe.named_steps["prep"]
-    fitted_clf  = base_pipe.named_steps["clf"]
-    ohe         = fitted_prep.named_transformers_["cat"]
-    all_feat_names = list(ohe.get_feature_names_out(cat_cols)) + num_cols
-    explainer   = shap.TreeExplainer(fitted_clf)
+    # 6. Extract components for Streamlit and SHAP
+    base_pipe     = calibrated.calibrated_classifiers_[0].estimator
+    fitted_scaler = base_pipe.named_steps["scale"]
+    fitted_clf    = base_pipe.named_steps["clf"]
+    explainer     = shap.TreeExplainer(fitted_clf)
 
     return dict(model=calibrated, feature_cols=feature_cols,
-                all_feat_names=all_feat_names, fitted_prep=fitted_prep,
-                fitted_clf=fitted_clf, explainer=explainer, threshold=0.38)
+                all_feat_names=all_feat_names, preprocessor=preprocessor,
+                fitted_scaler=fitted_scaler, explainer=explainer, threshold=0.38)
 
 
 try:
@@ -104,7 +122,8 @@ except Exception as e:
 model          = b["model"]
 feature_cols   = b["feature_cols"]
 all_feat_names = b["all_feat_names"]
-fitted_prep    = b["fitted_prep"]
+preprocessor   = b["preprocessor"]
+fitted_scaler  = b["fitted_scaler"]
 explainer      = b["explainer"]
 THRESHOLD      = b["threshold"]
 
@@ -212,11 +231,20 @@ if not predict_btn:
 
 # ── Predict ───────────────────────────────────────────────────────────────────
 with st.spinner("Scoring…"):
-    prob      = float(model.predict_proba(input_df)[0, 1])
+    # Apply the OneHotEncoder to the Streamlit input
+    input_encoded = preprocessor.transform(input_df)
+    input_encoded_df = pd.DataFrame(input_encoded, columns=all_feat_names)
+
+    # Predict using the calibrated model
+    prob      = float(model.predict_proba(input_encoded_df)[0, 1])
     risk_flag = prob >= THRESHOLD
-    X_proc    = fitted_prep.transform(input_df)
+    
+    # SHAP requires the explicitly scaled features to match how TreeExplainer was trained
+    X_proc    = fitted_scaler.transform(input_encoded_df)
     X_proc_df = pd.DataFrame(X_proc, columns=all_feat_names)
+    
     sv        = explainer.shap_values(X_proc_df)
+    
     # Robust: handle list-of-arrays (old shap) or single array (new shap)
     shap_arr  = sv[1] if isinstance(sv, list) and len(sv) > 1 else (sv[0] if isinstance(sv, list) else sv)
     shap_vals = np.array(shap_arr).ravel()
