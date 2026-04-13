@@ -52,6 +52,7 @@ st.markdown("""
 
 
 @st.cache_resource(show_spinner="Training model on first load — takes ~30 seconds…")
+@st.cache_resource(show_spinner="Training model on first load — takes ~30 seconds…")
 def build_model():
     from sklearn.model_selection import train_test_split
     from sklearn.compose import ColumnTransformer
@@ -70,11 +71,15 @@ def build_model():
     df["Churn"] = (df["Churn"] == "Yes").astype(int)
 
     feature_cols = [c for c in df.columns if c not in ["customerID", "Churn"]]
-    cat_cols     = [c for c in feature_cols if df[c].dtype == "object"]
-    num_cols     = [c for c in feature_cols if df[c].dtype != "object"]
-
+    
     X = df[feature_cols]
     y = df["Churn"]
+
+    # ---------------------------------------------------------
+    # NEW FIX: Bulletproof way to separate text from numbers
+    num_cols = X.select_dtypes(include=['number']).columns.tolist()
+    cat_cols = X.select_dtypes(exclude=['number']).columns.tolist()
+    # ---------------------------------------------------------
 
     # 2. Encode categorical variables BEFORE the pipeline
     preprocessor = ColumnTransformer([
