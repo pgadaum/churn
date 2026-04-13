@@ -73,8 +73,15 @@ def build_model():
     cat_cols     = [c for c in feature_cols if df[c].dtype == "object"]
     num_cols     = [c for c in feature_cols if df[c].dtype != "object"]
 
-    X = df[feature_cols]
-    y = df["Churn"]
+    # 1. Separate features and target
+    X = df.drop('Churn', axis=1)
+    y = df['Churn']
+
+    # 2. Convert target Yes/No to 1/0 (if you haven't already)
+    y = y.map({'Yes': 1, 'No': 0})
+
+    # 3. CONVERT ALL TEXT COLUMNS TO NUMBERS (This fixes your error!)
+    X = pd.get_dummies(X, drop_first=True)
 
     # 2. Encode categorical variables BEFORE the pipeline to satisfy CalibratedClassifierCV
     preprocessor = ColumnTransformer([
